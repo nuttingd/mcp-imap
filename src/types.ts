@@ -70,7 +70,7 @@ export interface ParsedMessage {
   html: string | null;
   hasAttachments: boolean;
   attachmentCount: number;
-  attachments: { filename: string | null; contentType: string; size: number }[];
+  attachments: { part: string; filename: string | null; contentType: string; size: number }[];
 }
 
 export interface MessageSummary {
@@ -81,6 +81,21 @@ export interface MessageSummary {
   from: ParsedAddress;
   date: string;
   hasAttachments: boolean;
+}
+
+export interface StructurePart {
+  part: string;
+  filename: string | null;
+  contentType: string;
+  size: number;
+}
+
+export interface AttachmentContent {
+  part: string;
+  filename: string | null;
+  contentType: string;
+  size: number;
+  content: Buffer;
 }
 
 export interface MailboxInfo {

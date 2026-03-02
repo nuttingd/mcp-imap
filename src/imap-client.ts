@@ -1,15 +1,49 @@
 import { ImapFlow } from 'imapflow';
 import type { MessageStructureObject } from 'imapflow';
+import { Readable } from 'stream';
 import { parseEmail } from './email-parser.js';
-import type { ImapConfig, MailboxInfo, MessageSummary, ParsedMessage } from './types.js';
+import type { AttachmentContent, ImapConfig, MailboxInfo, MessageSummary, ParsedMessage, StructurePart } from './types.js';
 
-function hasAttachmentParts(structure: MessageStructureObject | undefined): boolean {
-  if (!structure) return false;
-  if (structure.disposition === 'attachment') return true;
-  if (structure.childNodes) {
-    return structure.childNodes.some(hasAttachmentParts);
+function extractAttachmentParts(structure: MessageStructureObject | undefined): StructurePart[] {
+  if (!structure) return [];
+  const parts: StructurePart[] = [];
+
+  function walk(node: MessageStructureObject): void {
+    // Explicit attachments
+    if (node.disposition === 'attachment' && node.part) {
+      parts.push({
+        part: node.part,
+        filename: node.dispositionParameters?.filename ?? node.parameters?.name ?? null,
+        contentType: node.type ?? 'application/octet-stream',
+        size: node.size ?? 0,
+      });
+      return;
+    }
+    // Inline non-text parts (e.g. inline images) — treat as attachments
+    if (node.part && node.disposition === 'inline' && node.type && !node.type.startsWith('text/')) {
+      parts.push({
+        part: node.part,
+        filename: node.dispositionParameters?.filename ?? node.parameters?.name ?? null,
+        contentType: node.type,
+        size: node.size ?? 0,
+      });
+      return;
+    }
+    if (node.childNodes) {
+      node.childNodes.forEach(walk);
+    }
   }
-  return false;
+
+  walk(structure);
+  return parts;
+}
+
+async function streamToBuffer(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
 }
 
 export class ImapClient {
@@ -155,7 +189,7 @@ export class ImapClient {
           date: msg.envelope?.date
             ? new Date(msg.envelope.date).toISOString()
             : '',
-          hasAttachments: hasAttachmentParts(msg.bodyStructure),
+          hasAttachments: extractAttachmentParts(msg.bodyStructure).length > 0,
         });
       }
 
@@ -218,7 +252,7 @@ export class ImapClient {
           date: msg.envelope?.date
             ? new Date(msg.envelope.date).toISOString()
             : '',
-          hasAttachments: hasAttachmentParts(msg.bodyStructure),
+          hasAttachments: extractAttachmentParts(msg.bodyStructure).length > 0,
         });
       }
 
@@ -235,11 +269,59 @@ export class ImapClient {
     try {
       const msg = await client.fetchOne(
         String(uid),
-        { source: true, uid: true },
+        { source: true, uid: true, bodyStructure: true },
         { uid: true },
       );
       if (!msg || !msg.source) return null;
-      return parseEmail(msg.source, msg.uid);
+      const structureParts = extractAttachmentParts(msg.bodyStructure);
+      return parseEmail(msg.source, msg.uid, structureParts);
+    } finally {
+      lock.release();
+    }
+  }
+
+  async getAttachment(
+    mailbox: string,
+    uid: number,
+    part: string,
+    maxBytes?: number,
+  ): Promise<AttachmentContent> {
+    const client = await this.ensureConnected();
+    const lock = await client.getMailboxLock(mailbox);
+    try {
+      // Validate the part exists in the message's bodyStructure
+      const msg = await client.fetchOne(
+        String(uid),
+        { uid: true, bodyStructure: true },
+        { uid: true },
+      );
+      if (!msg) {
+        throw new Error(`Message with UID ${uid} not found in ${mailbox}`);
+      }
+
+      const structureParts = extractAttachmentParts(msg.bodyStructure);
+      const matchedPart = structureParts.find((p) => p.part === part);
+      if (!matchedPart) {
+        const available = structureParts.map((p) => `${p.part} (${p.filename ?? p.contentType})`).join(', ');
+        throw new Error(
+          `Part "${part}" is not a valid attachment for UID ${uid}. ` +
+          (available ? `Available parts: ${available}` : 'This message has no attachments.'),
+        );
+      }
+
+      const downloadOpts: { uid: boolean; maxBytes?: number } = { uid: true };
+      if (maxBytes) downloadOpts.maxBytes = maxBytes;
+
+      const download = await client.download(String(uid), part, downloadOpts);
+      const content = await streamToBuffer(download.content);
+
+      return {
+        part: matchedPart.part,
+        filename: download.meta.filename ?? matchedPart.filename,
+        contentType: download.meta.contentType ?? matchedPart.contentType,
+        size: content.length,
+        content,
+      };
     } finally {
       lock.release();
     }

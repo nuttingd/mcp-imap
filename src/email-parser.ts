@@ -1,5 +1,5 @@
 import PostalMime from 'postal-mime';
-import type { ParsedMessage, ParsedAddress } from './types.js';
+import type { ParsedMessage, ParsedAddress, StructurePart } from './types.js';
 
 function parseAddress(addr: { name?: string; address?: string } | undefined): ParsedAddress {
   return {
@@ -13,15 +13,29 @@ function parseAddressList(addrs: { name?: string; address?: string }[] | undefin
   return addrs.map(parseAddress);
 }
 
-export async function parseEmail(raw: Buffer, uid: number): Promise<ParsedMessage> {
+export async function parseEmail(
+  raw: Buffer,
+  uid: number,
+  structureParts?: StructurePart[],
+): Promise<ParsedMessage> {
   const parser = new PostalMime();
   const email = await parser.parse(raw);
 
-  const attachments = (email.attachments || []).map((att) => ({
-    filename: att.filename || null,
-    contentType: att.mimeType || 'application/octet-stream',
-    size: att.content instanceof ArrayBuffer ? att.content.byteLength : 0,
-  }));
+  // When bodyStructure parts are available, use them — they carry authoritative IMAP part numbers.
+  // Fall back to postal-mime metadata when structure parts aren't provided.
+  const attachments = structureParts && structureParts.length > 0
+    ? structureParts.map((sp) => ({
+        part: sp.part,
+        filename: sp.filename,
+        contentType: sp.contentType,
+        size: sp.size,
+      }))
+    : (email.attachments || []).map((att, i) => ({
+        part: String(i + 1),
+        filename: att.filename || null,
+        contentType: att.mimeType || 'application/octet-stream',
+        size: att.content instanceof ArrayBuffer ? att.content.byteLength : 0,
+      }));
 
   return {
     uid,

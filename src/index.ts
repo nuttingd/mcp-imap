@@ -3,9 +3,16 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { loadConfig, loadSmtpConfig } from './types.js';
 import { ImapClient } from './imap-client.js';
 import { SmtpClient } from './smtp-client.js';
+
+// Attachments larger than this returned inline risk blowing up tool response tokens.
+// When no save_to is specified, auto-save to a temp file instead.
+const INLINE_SIZE_LIMIT = 1024 * 256; // 256 KB
 
 const config = loadConfig();
 const imapClient = new ImapClient(config);
@@ -133,6 +140,113 @@ server.tool(
     } catch (error) {
       return {
         content: [{ type: 'text', text: `IMAP error: ${error instanceof Error ? error.message : String(error)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'get_attachment',
+  'Download a specific attachment from an email by IMAP part number. Use get_message first to see available attachments and their part numbers. Provide save_to to write directly to disk (recommended for non-text files) — parent directories are created automatically. Large attachments (>256KB) are auto-saved to a temp file when save_to is omitted.',
+  {
+    mailbox: z.string().default('INBOX').describe('Mailbox containing the message'),
+    uid: z.number().int().positive().describe('Message UID'),
+    part: z.string().describe('IMAP part number from the attachment metadata (e.g. "2", "1.2")'),
+    save_to: z.string().optional().describe('File path to save the attachment to. Directories are created automatically. When omitted, small files are returned inline; large files auto-save to a temp path.'),
+    max_size: z.number().int().positive().default(10_485_760).describe('Maximum download size in bytes (default 10MB)'),
+  },
+  async ({ mailbox, uid, part, save_to, max_size }) => {
+    try {
+      const attachment = await imapClient.getAttachment(mailbox, uid, part, max_size);
+      const mimeType = attachment.contentType.toLowerCase();
+      const meta = {
+        filename: attachment.filename,
+        contentType: attachment.contentType,
+        size: attachment.size,
+        part: attachment.part,
+      };
+
+      // --- Write to disk when save_to is provided ---
+      if (save_to) {
+        const resolvedPath = path.resolve(save_to);
+        await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+        await fs.writeFile(resolvedPath, attachment.content);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ ...meta, saved_to: resolvedPath }, null, 2),
+          }],
+        };
+      }
+
+      // --- Auto-save large non-text/non-image attachments to temp file ---
+      const isText = mimeType.startsWith('text/') || mimeType === 'application/json' || mimeType === 'application/xml';
+      const isImage = mimeType.startsWith('image/');
+
+      if (!isText && !isImage && attachment.size > INLINE_SIZE_LIMIT) {
+        const ext = attachment.filename ? path.extname(attachment.filename) : '';
+        const basename = attachment.filename
+          ? path.basename(attachment.filename, ext)
+          : `attachment-uid${uid}-part${part}`;
+        const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-imap-'));
+        const tmpPath = path.join(tmpDir, `${basename}${ext}`);
+        await fs.writeFile(tmpPath, attachment.content);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              ...meta,
+              saved_to: tmpPath,
+              note: 'Attachment was too large to return inline. Saved to a temp file.',
+            }, null, 2),
+          }],
+        };
+      }
+
+      // --- Inline responses for small / text / image content ---
+
+      // Images: return as viewable image content block
+      if (isImage) {
+        return {
+          content: [
+            {
+              type: 'image' as const,
+              data: attachment.content.toString('base64'),
+              mimeType: attachment.contentType,
+            },
+            { type: 'text' as const, text: JSON.stringify(meta) },
+          ],
+        };
+      }
+
+      // Text types: decode to UTF-8
+      if (isText) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              ...meta,
+              content: attachment.content.toString('utf-8'),
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Small binary: base64 inline
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ...meta,
+            encoding: 'base64',
+            content: attachment.content.toString('base64'),
+          }, null, 2),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
         isError: true,
       };
     }
