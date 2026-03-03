@@ -11,6 +11,7 @@ An MCP server that gives Claude full email access over IMAP and SMTP. Read, sear
 | `search_messages` | Search by from/to/subject/body/date/flagged/unseen |
 | `get_message` | Full message content by UID (text, HTML, attachment metadata with part numbers) |
 | `get_attachment` | Download attachment by IMAP part number — save to disk with `save_to`, or get inline (auto-saves large files to temp) |
+| `save_as_eml` | Save the original raw RFC 2822 message to disk as an .eml file (byte-for-byte, signatures intact) |
 | `move_message` | Move messages between folders (single UID or batch) |
 | `mark_message` | Read/unread/flagged/unflagged (single UID or batch) |
 | `send_message` | Compose and send a new email |

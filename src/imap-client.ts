@@ -280,6 +280,29 @@ export class ImapClient {
     }
   }
 
+  async getRawMessage(mailbox: string, uid: number): Promise<{ source: Buffer; envelope: { messageId: string; subject: string; date: string } } | null> {
+    const client = await this.ensureConnected();
+    const lock = await client.getMailboxLock(mailbox);
+    try {
+      const msg = await client.fetchOne(
+        String(uid),
+        { source: true, uid: true, envelope: true },
+        { uid: true },
+      );
+      if (!msg || !msg.source) return null;
+      return {
+        source: msg.source,
+        envelope: {
+          messageId: msg.envelope?.messageId ?? '',
+          subject: msg.envelope?.subject ?? '',
+          date: msg.envelope?.date ? new Date(msg.envelope.date).toISOString() : '',
+        },
+      };
+    } finally {
+      lock.release();
+    }
+  }
+
   async getAttachment(
     mailbox: string,
     uid: number,

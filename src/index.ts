@@ -254,6 +254,47 @@ server.tool(
 );
 
 server.tool(
+  'save_as_eml',
+  'Save the original raw RFC 2822 email to disk as an .eml file. This is the byte-for-byte original message including all headers, MIME structure, signatures, and attachments. Parent directories are created automatically.',
+  {
+    mailbox: z.string().default('INBOX').describe('Mailbox containing the message'),
+    uid: z.number().int().positive().describe('Message UID'),
+    save_to: z.string().describe('File path to save the .eml file to (directories created automatically)'),
+  },
+  async ({ mailbox, uid, save_to }) => {
+    try {
+      const raw = await imapClient.getRawMessage(mailbox, uid);
+      if (!raw) {
+        return {
+          content: [{ type: 'text', text: `Message with UID ${uid} not found in ${mailbox}` }],
+          isError: true,
+        };
+      }
+      const resolvedPath = path.resolve(save_to);
+      await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+      await fs.writeFile(resolvedPath, raw.source);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            messageId: raw.envelope.messageId,
+            subject: raw.envelope.subject,
+            date: raw.envelope.date,
+            size: raw.source.length,
+            saved_to: resolvedPath,
+          }, null, 2),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: 'text', text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
   'move_message',
   'Move one or more email messages to another mailbox/folder. Accepts a single UID or an array of UIDs for batch operations.',
   {
