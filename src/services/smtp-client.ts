@@ -1,6 +1,6 @@
 import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
-import type { SmtpConfig, ParsedMessage } from './types.js';
+import type { SmtpConfig, ParsedMessage } from '../shared/types.js';
 
 export class SmtpClient {
   private transporter: Transporter | null = null;

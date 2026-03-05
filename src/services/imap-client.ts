@@ -2,7 +2,7 @@ import { ImapFlow } from 'imapflow';
 import type { MessageStructureObject } from 'imapflow';
 import { Readable } from 'stream';
 import { parseEmail } from './email-parser.js';
-import type { AttachmentContent, ImapConfig, MailboxInfo, MessageSummary, ParsedMessage, StructurePart } from './types.js';
+import type { AttachmentContent, ImapConfig, MailboxInfo, MessageSummary, ParsedMessage, StructurePart } from '../shared/types.js';
 
 function extractAttachmentParts(structure: MessageStructureObject | undefined): StructurePart[] {
   if (!structure) return [];

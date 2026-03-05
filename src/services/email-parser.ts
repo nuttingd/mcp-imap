@@ -1,5 +1,5 @@
 import PostalMime from 'postal-mime';
-import type { ParsedMessage, ParsedAddress, StructurePart } from './types.js';
+import type { ParsedMessage, ParsedAddress, StructurePart } from '../shared/types.js';
 
 function parseAddress(addr: { name?: string; address?: string } | undefined): ParsedAddress {
   return {

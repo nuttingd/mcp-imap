@@ -4,21 +4,26 @@
   "description": "MCP server for IMAP email access — read, search, and manage email via Claude",
   "type": "module",
   "bin": {
-    "mcp-imap": "./dist/index.js"
+    "mcp-imap": "./dist/server/mcp.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "start": "node dist/index.js"
+    "start": "node dist/server/server.js",
+    "start:mcp": "node dist/server/mcp.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "imapflow": "^1.2.0",
     "nodemailer": "^8.0.1",
     "postal-mime": "^2.7.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.0.0",
     "@types/nodemailer": "^7.0.11",
     "typescript": "^5.7.0"
