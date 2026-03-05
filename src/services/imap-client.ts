@@ -350,6 +350,20 @@ export class ImapClient {
     }
   }
 
+  async appendMessage(
+    mailbox: string,
+    raw: Buffer | string,
+    flags?: string[],
+  ): Promise<{ uid?: number; uidValidity?: number }> {
+    const client = await this.ensureConnected();
+    const result = await client.append(mailbox, raw, flags ?? [], new Date());
+    if (!result) return {};
+    return {
+      uid: result.uid,
+      uidValidity: result.uidValidity != null ? Number(result.uidValidity) : undefined,
+    };
+  }
+
   async moveMessage(mailbox: string, uid: number | number[], destination: string): Promise<boolean> {
     const client = await this.ensureConnected();
     const lock = await client.getMailboxLock(mailbox);

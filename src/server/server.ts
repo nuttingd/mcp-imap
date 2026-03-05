@@ -2,6 +2,7 @@
 
 import cors from 'cors';
 import express from 'express';
+import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import { loadConfig, loadSmtpConfig } from '../shared/types.js';
 import { ImapClient } from '../services/imap-client.js';
 import { SmtpClient } from '../services/smtp-client.js';
@@ -259,6 +260,132 @@ app.post('/api/messages/:uid/forward', async (req, res) => {
 
     const result = await smtpClient!.forward(original, { to, body });
     res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: errMsg(err) });
+  }
+});
+
+// ── Drafts (IMAP APPEND to Drafts) ───────────────────────────
+
+async function findDraftsMailbox(): Promise<string> {
+  const mailboxes = await imapClient.listMailboxes();
+  const drafts = mailboxes.find((mb) => mb.specialUse === '\\Drafts');
+  return drafts?.path ?? 'Drafts';
+}
+
+app.post('/api/drafts', async (req, res) => {
+  try {
+    const { to, cc, bcc, subject, body, html } = req.body;
+    if (!to || !subject || !body) {
+      res.status(400).json({ error: 'Missing required fields: to, subject, body' }); return;
+    }
+
+    const from = smtpConfig?.username ?? config.username;
+    const mail = new MailComposer({ from, to, cc, bcc, subject, text: body, html });
+    const raw = await mail.compile().build();
+
+    const draftsMailbox = await findDraftsMailbox();
+    const result = await imapClient.appendMessage(draftsMailbox, raw, ['\\Draft', '\\Seen']);
+    res.json({ drafted: true, mailbox: draftsMailbox, ...result });
+  } catch (err) {
+    res.status(500).json({ error: errMsg(err) });
+  }
+});
+
+app.post('/api/messages/:uid/draft-reply', async (req, res) => {
+  try {
+    const uid = parseInt(req.params.uid, 10);
+    if (isNaN(uid)) { res.status(400).json({ error: 'Invalid UID' }); return; }
+    const { mailbox = 'INBOX', body, reply_all = false } = req.body;
+    if (!body) { res.status(400).json({ error: 'Missing body' }); return; }
+
+    const original = await imapClient.getMessage(mailbox, uid);
+    if (!original) { res.status(404).json({ error: 'Original message not found' }); return; }
+
+    const from = smtpConfig?.username ?? config.username;
+
+    // Build reply subject
+    const subject = original.subject.startsWith('Re:')
+      ? original.subject
+      : `Re: ${original.subject}`;
+
+    // Build references chain
+    const references = original.references
+      ? `${original.references} ${original.messageId}`
+      : original.messageId;
+
+    // Determine recipients
+    const to = reply_all
+      ? [original.from.address, ...original.to.map((a: { address: string }) => a.address)]
+          .filter((addr: string) => addr && addr !== from)
+          .join(', ') || original.from.address
+      : original.from.address;
+
+    const cc = reply_all
+      ? original.cc
+          .map((a: { address: string }) => a.address)
+          .filter((addr: string) => addr && addr !== from)
+          .join(', ') || undefined
+      : undefined;
+
+    // Quote original
+    const fromDisplay = original.from.name || original.from.address;
+    const attribution = `On ${original.date}, ${fromDisplay} wrote:`;
+    const quotedText = original.text
+      ? original.text.split('\n').map((line: string) => `> ${line}`).join('\n')
+      : '';
+    const text = `${body}\n\n${attribution}\n${quotedText}`;
+
+    const mail = new MailComposer({
+      from, to, cc, subject, text,
+      inReplyTo: original.messageId,
+      references,
+    });
+    const raw = await mail.compile().build();
+
+    const draftsMailbox = await findDraftsMailbox();
+    const result = await imapClient.appendMessage(draftsMailbox, raw, ['\\Draft', '\\Seen']);
+    res.json({ drafted: true, mailbox: draftsMailbox, ...result });
+  } catch (err) {
+    res.status(500).json({ error: errMsg(err) });
+  }
+});
+
+app.post('/api/messages/:uid/draft-forward', async (req, res) => {
+  try {
+    const uid = parseInt(req.params.uid, 10);
+    if (isNaN(uid)) { res.status(400).json({ error: 'Invalid UID' }); return; }
+    const { mailbox = 'INBOX', to, body } = req.body;
+    if (!to) { res.status(400).json({ error: 'Missing to' }); return; }
+
+    const original = await imapClient.getMessage(mailbox, uid);
+    if (!original) { res.status(404).json({ error: 'Original message not found' }); return; }
+
+    const from = smtpConfig?.username ?? config.username;
+    const fromDisplay = original.from.name || original.from.address;
+
+    const header = [
+      '---------- Forwarded message ----------',
+      `From: ${fromDisplay} <${original.from.address}>`,
+      `Date: ${original.date}`,
+      `Subject: ${original.subject}`,
+      `To: ${original.to.map((a: { address: string }) => a.address).join(', ')}`,
+      '',
+    ].join('\n');
+
+    const commentary = body ? `${body}\n\n` : '';
+    const text = `${commentary}${header}${original.text || ''}`;
+
+    const subject = original.subject.startsWith('Fwd:')
+      ? original.subject
+      : `Fwd: ${original.subject}`;
+
+    const mail = new MailComposer({ from, to, subject, text });
+    const raw = await mail.compile().build();
+
+    const draftsMailbox = await findDraftsMailbox();
+    const result = await imapClient.appendMessage(draftsMailbox, raw, ['\\Draft', '\\Seen']);
+    res.json({ drafted: true, mailbox: draftsMailbox, ...result });
   } catch (err) {
     res.status(500).json({ error: errMsg(err) });
   }
